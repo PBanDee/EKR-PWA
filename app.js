@@ -1,7 +1,11 @@
 const DATABASE_NAME = 'ekr-local-data';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const INSTALLATIONS_STORE = 'installations';
+const UPLOAD_QUEUE_STORE = 'uploadQueue';
 const AUTOSAVE_DELAY = 450;
+const RETRY_BASE_DELAY = 30_000;
+const RETRY_MAX_DELAY = 60 * 60 * 1000;
+const PROCESSING_STALE_AFTER = 5 * 60 * 1000;
 const MAX_PHOTO_SIZE_BYTES = 15 * 1024 * 1024;
 const MAX_INSTALLATION_PHOTO_BYTES = 50 * 1024 * 1024;
 const PHOTO_CATEGORIES = [
@@ -34,6 +38,9 @@ const clearSignatureButton = document.querySelector('#clear-signature');
 const saveState = document.querySelector('#save-state');
 const notice = document.querySelector('#notice');
 const finalizeButton = document.querySelector('#finalize-installation');
+const syncNowButton = document.querySelector('#sync-now');
+const mockFailureToggle = document.querySelector('#mock-failure');
+const syncState = document.querySelector('#sync-state');
 
 let database;
 let configuration;
@@ -47,6 +54,8 @@ let saveQueue = Promise.resolve();
 let editRevision = 0;
 let hasUnsavedChanges = false;
 let lastSaveError = null;
+let syncInProgress = false;
+let retryTimer = null;
 
 function createId() {
   if (!window.crypto || typeof window.crypto.randomUUID !== 'function') {
@@ -97,6 +106,11 @@ function openDatabase() {
         const store = db.createObjectStore(INSTALLATIONS_STORE, { keyPath: 'id' });
         store.createIndex('updatedAt', 'updatedAt');
       }
+      if (!db.objectStoreNames.contains(UPLOAD_QUEUE_STORE)) {
+        const queue = db.createObjectStore(UPLOAD_QUEUE_STORE, { keyPath: 'id' });
+        queue.createIndex('installationId', 'installationId');
+        queue.createIndex('status', 'status');
+      }
     });
     request.addEventListener('success', () => resolve(request.result), { once: true });
     request.addEventListener('error', () => reject(request.error), { once: true });
@@ -126,6 +140,129 @@ async function getInstallation(id) {
   const installation = await requestResult(transaction.objectStore(INSTALLATIONS_STORE).get(id));
   await done;
   return installation;
+}
+
+async function getUploadQueue() {
+  const transaction = database.transaction(UPLOAD_QUEUE_STORE, 'readonly');
+  const done = transactionDone(transaction);
+  const entries = await requestResult(transaction.objectStore(UPLOAD_QUEUE_STORE).getAll());
+  await done;
+  return entries;
+}
+
+async function saveFinalizedInstallation(installation) {
+  const transaction = database.transaction([INSTALLATIONS_STORE, UPLOAD_QUEUE_STORE], 'readwrite');
+  const done = transactionDone(transaction);
+  const queuedAt = installation.finalizedAt;
+  transaction.objectStore(INSTALLATIONS_STORE).put(installation);
+  transaction.objectStore(UPLOAD_QUEUE_STORE).put({
+    id: createId(),
+    installationId: installation.id,
+    operation: 'create_installation',
+    attempts: 0,
+    lastAttemptAt: null,
+    nextAttemptAt: queuedAt,
+    lastError: '',
+    status: 'pending',
+    createdAt: queuedAt
+  });
+  await done;
+}
+
+async function claimQueueEntry(queueId) {
+  const transaction = database.transaction([INSTALLATIONS_STORE, UPLOAD_QUEUE_STORE], 'readwrite');
+  const done = transactionDone(transaction);
+  const queueStore = transaction.objectStore(UPLOAD_QUEUE_STORE);
+  const entryRequest = requestResult(queueStore.get(queueId));
+  const installationRequest = entryRequest.then((entry) => entry
+    ? requestResult(transaction.objectStore(INSTALLATIONS_STORE).get(entry.installationId))
+    : null);
+  const [entry, installation] = await Promise.all([entryRequest, installationRequest]);
+  if (!entry || !['pending', 'error'].includes(entry.status)) {
+    await done;
+    return null;
+  }
+  if (!installation) {
+    await done;
+    throw new Error(`A queue-ban hivatkozott kivitelezés nem található (${entry.installationId}).`);
+  }
+
+  entry.status = 'processing';
+  entry.attempts += 1;
+  entry.lastAttemptAt = new Date().toISOString();
+  entry.processingStartedAt = entry.lastAttemptAt;
+  entry.lastError = '';
+  queueStore.put(entry);
+  await done;
+  return { entry, installation };
+}
+
+async function finishMockAttempt(queueId, response, error) {
+  const transaction = database.transaction([INSTALLATIONS_STORE, UPLOAD_QUEUE_STORE], 'readwrite');
+  const done = transactionDone(transaction);
+  const queueStore = transaction.objectStore(UPLOAD_QUEUE_STORE);
+  const entryRequest = requestResult(queueStore.get(queueId));
+  const installationRequest = entryRequest.then((entry) => entry
+    ? requestResult(transaction.objectStore(INSTALLATIONS_STORE).get(entry.installationId))
+    : null);
+  const [entry, installation] = await Promise.all([entryRequest, installationRequest]);
+  if (!entry || entry.status !== 'processing') {
+    await done;
+    throw new Error('A mock queue-bejegyzés időközben megváltozott vagy nem található.');
+  }
+  if (!installation) {
+    await done;
+    throw new Error(`A queue-ban hivatkozott kivitelezés nem található (${entry.installationId}).`);
+  }
+
+  if (error) {
+    const lastError = error instanceof Error ? error.message : 'Ismeretlen mock API-hiba.';
+    const nextAttemptAt = new Date(Date.now() + retryDelay(entry.attempts)).toISOString();
+    entry.status = 'error';
+    entry.lastError = lastError;
+    entry.nextAttemptAt = nextAttemptAt;
+    delete entry.processingStartedAt;
+    installation.mockSync = {
+      status: 'error',
+      lastError,
+      lastAttemptAt: entry.lastAttemptAt,
+      nextAttemptAt
+    };
+  } else {
+    entry.status = 'mock_complete';
+    entry.lastError = '';
+    entry.nextAttemptAt = null;
+    entry.completedAt = response.receivedAt;
+    entry.receiptId = response.receiptId;
+    delete entry.processingStartedAt;
+    installation.mockSync = {
+      status: 'succeeded',
+      receiptId: response.receiptId,
+      receivedAt: response.receivedAt
+    };
+  }
+  queueStore.put(entry);
+  transaction.objectStore(INSTALLATIONS_STORE).put(installation);
+  await done;
+}
+
+async function recoverInterruptedQueueEntries() {
+  const transaction = database.transaction(UPLOAD_QUEUE_STORE, 'readwrite');
+  const done = transactionDone(transaction);
+  const store = transaction.objectStore(UPLOAD_QUEUE_STORE);
+  const entries = await requestResult(store.getAll());
+  for (const entry of entries) {
+    const startedAt = Date.parse(entry.processingStartedAt);
+    const processingIsStale = !Number.isFinite(startedAt) || Date.now() - startedAt >= PROCESSING_STALE_AFTER;
+    if (entry.status === 'processing' && processingIsStale) {
+      entry.status = 'pending';
+      entry.nextAttemptAt = new Date().toISOString();
+      entry.lastError = 'Az előző mock próbálkozás megszakadt; biztonságosan újrapróbálható.';
+      delete entry.processingStartedAt;
+      store.put(entry);
+    }
+  }
+  await done;
 }
 
 async function loadConfiguration() {
@@ -340,7 +477,9 @@ function showEditor(installation) {
   document.querySelector('#editor-title').textContent = installation.customerName || 'Új kivitelezés';
   document.querySelector('#editor-description').textContent = installation.syncStatus === 'draft'
     ? 'A módosítások automatikusan, helyben mentődnek.'
-    : 'Ez a munka véglegesítve van. A helyi adatok megmaradnak ezen az eszközön.';
+    : installation.mockSync && installation.mockSync.status === 'succeeded'
+      ? `A mock válasz szimulálva (${installation.mockSync.receiptId}); valódi feltöltés nem történt.`
+      : 'Ez a munka véglegesítve van. A helyi adatok megmaradnak ezen az eszközön.';
 
   installationForm.elements.customerName.value = installation.customerName;
   installationForm.elements.siteAddress.value = installation.siteAddress;
@@ -369,6 +508,10 @@ function showEditor(installation) {
   updateSignatureFeedback();
   if (isEditable) {
     setSaveState('Helyben mentve');
+  } else if (installation.mockSync && installation.mockSync.status === 'succeeded') {
+    setSaveState('Helyben mentve · mock válasz');
+  } else if (installation.mockSync && installation.mockSync.status === 'error') {
+    setSaveState('Helyben mentve · mock hiba', 'error');
   } else {
     setSaveState('Véglegesítve · feltöltésre vár');
   }
@@ -479,6 +622,21 @@ function statusLabel(status) {
   return { text: 'Piszkozat · helyben mentve', className: '' };
 }
 
+function queueReadyAt(entry) {
+  const timestamp = Date.parse(entry.nextAttemptAt);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function retryDelay(attempts) {
+  return Math.min(RETRY_BASE_DELAY * (2 ** Math.max(0, attempts - 1)), RETRY_MAX_DELAY);
+}
+
+function formatTimestamp(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('hu-HU');
+}
+
 function formatDate(value) {
   if (!value) return 'Nincs dátum';
   const [year, month, day] = value.split('-');
@@ -487,15 +645,18 @@ function formatDate(value) {
 
 async function renderInstallationList() {
   const installations = await getAllInstallations();
+  const queueEntries = await getUploadQueue();
+  const queueByInstallation = new Map(queueEntries.map((entry) => [entry.installationId, entry]));
   installationList.replaceChildren();
   installationSummary.textContent = installations.length === 1
     ? '1 helyben tárolt munka'
     : `${installations.length} helyben tárolt munka`;
-  const pending = installations.filter((item) => ['pending_upload', 'uploading', 'upload_error'].includes(item.syncStatus)).length;
-  document.querySelector('#pending-count').textContent = `Feltöltésre váró munkák: ${pending}`;
-  document.querySelector('#sync-hint').textContent = pending > 0
-    ? 'A központi feltöltés ebben a prototípusban még nem érhető el'
-    : 'Központi szinkronizáció még nem érhető el';
+  const realPending = installations.filter((item) => ['pending_upload', 'uploading', 'upload_error'].includes(item.syncStatus)).length;
+  const queuePending = queueEntries.filter((entry) => ['pending', 'error', 'processing'].includes(entry.status)).length;
+  document.querySelector('#pending-count').textContent = `Valódi feltöltésre váró munkák: ${realPending}`;
+  document.querySelector('#sync-hint').textContent = `Mock queue: ${queuePending} várakozik · valódi feltöltés nem történik`;
+  syncNowButton.disabled = queuePending === 0 || syncInProgress;
+  syncNowButton.textContent = syncInProgress ? 'Mock szinkronizáció folyamatban…' : 'Szinkronizálás most · MOCK';
 
   if (installations.length === 0) {
     const empty = document.createElement('div');
@@ -525,6 +686,24 @@ async function renderInstallationList() {
     address.className = 'installation-address';
     address.textContent = installation.siteAddress || 'A helyszín címe még nincs megadva';
     details.append(name, address);
+    const queueEntry = queueByInstallation.get(installation.id);
+    let mockStatusText = '';
+    if (queueEntry && queueEntry.status === 'processing') {
+      mockStatusText = 'Mock válasz feldolgozás alatt…';
+    } else if (queueEntry && queueEntry.status === 'error') {
+      const retryAt = formatTimestamp(queueEntry.nextAttemptAt);
+      mockStatusText = `Mock hiba: ${queueEntry.lastError}${retryAt ? ` · újrapróbálható: ${retryAt}` : ''}`;
+    } else if (queueEntry && queueEntry.status === 'pending') {
+      mockStatusText = 'Mock szinkronizáció várakozik.';
+    } else if (queueEntry && queueEntry.status === 'mock_complete') {
+      mockStatusText = `Mock válasz: ${queueEntry.receiptId} · ez nem valódi feltöltés.`;
+    }
+    if (mockStatusText) {
+      const mockStatus = document.createElement('span');
+      mockStatus.className = 'installation-address mock-sync-status';
+      mockStatus.textContent = mockStatusText;
+      details.append(mockStatus);
+    }
     const meta = document.createElement('span');
     meta.className = 'installation-meta';
     const date = document.createElement('span');
@@ -543,6 +722,116 @@ async function renderInstallationList() {
       }
     });
     installationList.append(card);
+  }
+}
+
+function scheduleQueueRetry() {
+  if (retryTimer !== null) {
+    window.clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  if (!navigator.onLine || syncInProgress) return;
+
+  recoverInterruptedQueueEntries().then(getUploadQueue).then((entries) => {
+    const retryAtTimes = entries.flatMap((entry) => {
+      if (['pending', 'error'].includes(entry.status)) return [queueReadyAt(entry)];
+      if (entry.status === 'processing') {
+        const startedAt = Date.parse(entry.processingStartedAt);
+        return [Number.isFinite(startedAt) ? startedAt + PROCESSING_STALE_AFTER : Date.now()];
+      }
+      return [];
+    });
+    if (retryAtTimes.length === 0) return;
+    const nextAttempt = Math.min(...retryAtTimes);
+    const delay = Math.max(0, nextAttempt - Date.now());
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null;
+      processMockQueue({ manual: false });
+    }, delay);
+  }).catch((error) => {
+    reportError('A mock várólista következő próbálkozását nem sikerült ütemezni.', error);
+  });
+}
+
+async function processMockQueue({ manual }) {
+  if (syncInProgress) return;
+  if (!navigator.onLine) {
+    syncState.textContent = 'Offline állapotban a mock szinkronizáció nem indul el.';
+    if (manual) showNotice('Nincs internetkapcsolat. A munkák helyben maradtak; visszatéréskor újrapróbáljuk.', true);
+    return;
+  }
+
+  syncInProgress = true;
+  syncNowButton.disabled = true;
+  mockFailureToggle.disabled = true;
+  syncNowButton.textContent = 'Mock szinkronizáció folyamatban…';
+  syncState.textContent = 'A mock API válaszára vár…';
+  let succeeded = 0;
+  let failed = 0;
+
+  try {
+    await recoverInterruptedQueueEntries();
+    const entries = await getUploadQueue();
+    const now = Date.now();
+    const retryable = entries.filter((entry) => ['pending', 'error'].includes(entry.status)
+      && (manual || queueReadyAt(entry) <= now));
+
+    if (retryable.length === 0) {
+      syncState.textContent = 'Nincs most esedékes mock szinkronizáció.';
+      return;
+    }
+
+    for (const queuedEntry of retryable) {
+      const claimed = await claimQueueEntry(queuedEntry.id);
+      if (!claimed) continue;
+      await renderInstallationList();
+
+      let response;
+      try {
+        response = await window.EkrApi.uploadInstallation(claimed.installation, {
+          simulateFailure: mockFailureToggle.checked
+        });
+        if (!response || typeof response.receiptId !== 'string' || response.receiptId.length === 0
+            || !Number.isFinite(Date.parse(response.receivedAt))) {
+          throw new Error('A mock API válasza hiányos vagy hibás.');
+        }
+      } catch (error) {
+        await finishMockAttempt(queuedEntry.id, null, error);
+        failed += 1;
+        console.error('A mock szinkronizációs próbálkozás nem sikerült; a helyi munka megmaradt.', error);
+        await renderInstallationList();
+        continue;
+      }
+
+      await finishMockAttempt(queuedEntry.id, response, null);
+      succeeded += 1;
+      await renderInstallationList();
+    }
+
+    if (failed > 0) {
+      syncState.textContent = `Mock hiba: ${failed} munka újrapróbálható; a helyi adatok megmaradtak.`;
+      if (manual) {
+        showNotice(`A mock válasz ${failed} munkánál hibát jelzett. Az adatok helyben megmaradtak; a kézi újrapróbálás nem várakozik.`, true);
+      }
+    } else if (succeeded > 0) {
+      syncState.textContent = `Mock válasz szimulálva: ${succeeded} munka. Valódi feltöltés nem történt.`;
+      if (manual) {
+        showNotice(`A mock válasz ${succeeded} munkát átvettnek szimulált. Valódi szerverfeltöltés nem történt.`);
+      }
+    } else {
+      syncState.textContent = 'Nincs most esedékes mock szinkronizáció.';
+    }
+  } catch (error) {
+    reportError('A mock szinkronizáció nem fejeződött be.', error);
+  } finally {
+    syncInProgress = false;
+    mockFailureToggle.disabled = false;
+    try {
+      await renderInstallationList();
+    } catch (error) {
+      reportError('A kivitelezési lista frissítése nem sikerült.', error);
+    }
+    scheduleQueueRetry();
   }
 }
 
@@ -956,10 +1245,11 @@ async function finalizeInstallation() {
         .every((field) => fieldValueIsPresent(record.values[field.id]));
       if (record.completed) record.completedAt = finalizedAt;
     }
-    await putInstallation(currentInstallation);
+    await saveFinalizedInstallation(currentInstallation);
     showEditor(currentInstallation);
     showNotice('A kivitelezés helyben véglegesítve. Feltöltés és szerveroldali visszaigazolás nem történt.');
     await renderInstallationList();
+    scheduleQueueRetry();
   } catch (error) {
     reportError('A kivitelezés véglegesítése nem sikerült.', error);
   } finally {
@@ -1011,9 +1301,11 @@ async function startApp() {
   ]);
   database = openedDatabase;
   configuration = loadedConfiguration;
+  await recoverInterruptedQueueEntries();
   await renderInstallationList();
   updateConnectionStatus();
   await registerServiceWorker();
+  scheduleQueueRetry();
 }
 
 document.querySelector('#new-installation').addEventListener('click', async () => {
@@ -1026,6 +1318,10 @@ document.querySelector('#new-installation').addEventListener('click', async () =
   } catch (error) {
     reportError('Új kivitelezést nem sikerült létrehozni.', error);
   }
+});
+
+syncNowButton.addEventListener('click', () => {
+  processMockQueue({ manual: true });
 });
 
 document.querySelector('#back-to-home').addEventListener('click', async () => {
@@ -1104,8 +1400,14 @@ signaturesContainer.addEventListener('click', async (event) => {
   }
 });
 finalizeButton.addEventListener('click', finalizeInstallation);
-window.addEventListener('online', updateConnectionStatus);
-window.addEventListener('offline', updateConnectionStatus);
+window.addEventListener('online', () => {
+  updateConnectionStatus();
+  scheduleQueueRetry();
+});
+window.addEventListener('offline', () => {
+  updateConnectionStatus();
+  scheduleQueueRetry();
+});
 
 startApp().catch((error) => {
   console.error('Az alkalmazás indítása nem sikerült.', error);

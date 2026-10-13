@@ -1,9 +1,10 @@
-const CACHE_NAME = 'ekr-pwa-shell-v4';
+const CACHE_NAME = 'ekr-pwa-shell-v7';
 const CACHE_PREFIX = 'ekr-pwa-shell-';
 const SHELL_FILES = [
   './',
   './index.html',
   './styles.css',
+  './api.js',
   './app.js',
   './manifest.webmanifest',
   './templates.json',

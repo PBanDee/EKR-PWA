@@ -9,6 +9,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
+    <script src="./api.js" defer></script>
     <script src="./app.js" defer></script>
   </head>
   <body>
@@ -46,6 +47,11 @@
           <div class="status-item">
             <span class="status-icon status-icon-amber" aria-hidden="true">↥</span>
             <span><strong id="pending-count">Feltöltésre váró munkák: 0</strong><small id="sync-hint">Központi szinkronizáció még nem érhető el</small></span>
+          </div>
+          <div class="sync-controls">
+            <button class="button button-primary" id="sync-now" type="button" disabled>Szinkronizálás most · MOCK</button>
+            <label class="mock-failure-toggle"><input id="mock-failure" type="checkbox"> Mock hibát szimulálok</label>
+            <small id="sync-state" role="status" aria-live="polite">A mock nem küld adatot központi szerverre.</small>
           </div>
         </div>
 
@@ -140,7 +146,7 @@
 
     <footer class="app-footer">
       <span>EKR prototípus</span>
-      <span>Helyben mentve ≠ feltöltve</span>
+      <span>Mock szinkronizáció · nincs valódi feltöltés</span>
     </footer>
   </body>
 </html>
