@@ -1,0 +1,59 @@
+{
+  "contractorId": "demo-contractor",
+  "contractorName": "Bemutató kivitelező",
+  "configVersion": "demo-1",
+  "documentTemplates": [
+    {
+      "code": "work-record",
+      "title": "Munkalap",
+      "version": "1.0.0",
+      "required": true,
+      "fields": [
+        {
+          "id": "workDescription",
+          "label": "Elvégzett munka leírása",
+          "type": "textarea",
+          "required": true,
+          "helpText": "Röviden írd le az elvégzett munkát."
+        },
+        {
+          "id": "workType",
+          "label": "Munka típusa",
+          "type": "choice",
+          "required": true,
+          "options": [
+            { "value": "installation", "label": "Telepítés" },
+            { "value": "maintenance", "label": "Karbantartás" },
+            { "value": "repair", "label": "Javítás" }
+          ]
+        },
+        {
+          "id": "customerPresent",
+          "label": "Az ügyfél a helyszínen volt",
+          "type": "boolean",
+          "defaultValue": false
+        }
+      ]
+    },
+    {
+      "code": "site-check",
+      "title": "Helyszíni ellenőrzés",
+      "version": "1.0.0",
+      "required": false,
+      "fields": [
+        {
+          "id": "siteNotes",
+          "label": "Megjegyzések",
+          "type": "textarea",
+          "helpText": "Opcionális helyszíni megjegyzések."
+        },
+        {
+          "id": "followUpRequired",
+          "label": "További intézkedés szükséges",
+          "type": "boolean",
+          "defaultValue": false
+        }
+      ]
+    }
+  ]
+}

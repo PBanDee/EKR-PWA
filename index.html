@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="hu">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#143c35">
+    <meta name="description" content="Offline terepi dokumentációs prototípus kivitelezések helyi rögzítéséhez.">
+    <title>EKR · Helyi munkák</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="EKR főoldal">
+        <span class="brand-mark" aria-hidden="true">E</span>
+        <span><strong>EKR</strong><small>TEREPI DOKUMENTÁCIÓ</small></span>
+      </a>
+      <div class="connection-state" id="connection-state" role="status">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label">Kapcsolat ellenőrzése…</span>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+
+      <section id="home-screen" aria-labelledby="home-title">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">HELYI MUNKATERÜLET</p>
+            <h1 id="home-title">Kivitelezések</h1>
+            <p class="lead">A munkáid ezen az eszközön, internet nélkül is elérhetők.</p>
+          </div>
+          <button class="button button-primary" id="new-installation" type="button">
+            <span aria-hidden="true">＋</span> Új kivitelezés
+          </button>
+        </div>
+
+        <div class="status-strip" aria-label="Helyi adatok és szinkronizáció">
+          <div class="status-item">
+            <span class="status-icon status-icon-green" aria-hidden="true">✓</span>
+            <span><strong>Helyi tárhely</strong><small>Az adatok mentése ezen az eszközön történik</small></span>
+          </div>
+          <div class="status-item">
+            <span class="status-icon status-icon-amber" aria-hidden="true">↥</span>
+            <span><strong id="pending-count">Feltöltésre váró munkák: 0</strong><small id="sync-hint">Központi szinkronizáció még nem érhető el</small></span>
+          </div>
+        </div>
+
+        <div class="section-heading">
+          <div>
+            <h2>Eszközön tárolt munkák</h2>
+            <p id="installation-summary">Munkák betöltése…</p>
+          </div>
+        </div>
+        <div class="installation-list" id="installation-list" aria-live="polite"></div>
+      </section>
+
+      <section id="editor-screen" aria-labelledby="editor-title" hidden>
+        <button class="back-link" id="back-to-home" type="button">← Vissza a munkákhoz</button>
+        <div class="page-heading editor-heading">
+          <div>
+            <p class="eyebrow">HELYI MUNKALAP</p>
+            <h1 id="editor-title">Új kivitelezés</h1>
+            <p class="lead" id="editor-description">A módosítások automatikusan, helyben mentődnek.</p>
+          </div>
+          <span class="save-state" id="save-state" role="status" aria-live="polite">Helyi mentés előkészítése…</span>
+        </div>
+
+        <form id="installation-form">
+          <section class="form-card" aria-labelledby="details-title">
+            <div class="card-heading">
+              <span class="step-number">01</span>
+              <div><h2 id="details-title">Alapadatok</h2><p>A kötelező mezőket <span aria-hidden="true">*</span> jelöli.</p></div>
+            </div>
+            <div class="field-grid">
+              <label class="field">
+                <span>Ügyfél neve <span class="required-mark">*</span></span>
+                <input name="customerName" autocomplete="name" maxlength="160" required>
+              </label>
+              <label class="field">
+                <span>Helyszín címe <span class="required-mark">*</span></span>
+                <input name="siteAddress" autocomplete="street-address" maxlength="240" required>
+              </label>
+              <label class="field field-date">
+                <span>Kivitelezés dátuma <span class="required-mark">*</span></span>
+                <input name="installationDate" type="date" required>
+              </label>
+            </div>
+          </section>
+
+          <div id="documents-container"></div>
+          <section class="form-card" aria-labelledby="photos-title">
+            <div class="card-heading">
+              <span class="step-number" id="photos-step">04</span>
+              <div><h2 id="photos-title">Helyszíni fényképek</h2><p>A képek és megjegyzéseik ezen az eszközön maradnak.</p></div>
+            </div>
+            <label class="field photo-picker">
+              <span>Fényképek hozzáadása</span>
+              <input id="photo-input" type="file" accept="image/*" multiple>
+              <small class="field-help">Válassz képeket a galériából vagy készíts fényképet. Képenként legfeljebb 15 MB, munkánként összesen legfeljebb 50 MB.</small>
+            </label>
+            <p class="photo-summary" id="photo-summary" role="status" aria-live="polite">Még nincs fénykép csatolva.</p>
+            <div class="photo-grid" id="photos-container" aria-live="polite"></div>
+          </section>
+          <section class="form-card" aria-labelledby="signatures-title">
+            <div class="card-heading">
+              <span class="step-number" id="signatures-step">05</span>
+              <div><h2 id="signatures-title">Aláírás</h2><p>Az aláírás rajzolt képként, helyben kerül mentésre; nem tanúsítványalapú digitális aláírás.</p></div>
+            </div>
+            <div class="signature-fields">
+              <label class="field">
+                <span>Aláíró neve <span class="required-mark">*</span></span>
+                <input id="signer-name" autocomplete="name" maxlength="160" required>
+              </label>
+              <label class="field">
+                <span>Szerepkör <span class="field-help">(nem kötelező)</span></span>
+                <input id="signer-role" maxlength="120" placeholder="Például: ügyfél">
+              </label>
+            </div>
+            <p class="signature-instructions">Írd alá az érintőképernyőn, tollal vagy egérrel. A kereten belüli aláírás szükséges az elfogadáshoz.</p>
+            <canvas id="signature-canvas" class="signature-canvas" width="1200" height="400" role="img" aria-label="Aláírás rajzterület" aria-describedby="signature-feedback" tabindex="0"></canvas>
+            <p class="signature-feedback" id="signature-feedback" role="status" aria-live="polite">Rajzolj aláírást a fenti mezőbe.</p>
+            <div class="signature-actions">
+              <button class="button signature-secondary" id="clear-signature" type="button">Rajz törlése</button>
+              <button class="button button-primary" id="accept-signature" type="button">Aláírás elfogadása és mentése</button>
+            </div>
+            <p class="photo-summary" id="signature-summary" role="status" aria-live="polite">Még nincs aláírás csatolva.</p>
+            <div class="signature-list" id="signatures-container" aria-live="polite"></div>
+          </section>
+          <div class="editor-actions">
+            <p>A „Véglegesítés” lezárja a helyi munkát. Feltöltés és központi átvétel ebben a prototípusban nem történik.</p>
+            <button class="button button-primary" id="finalize-installation" type="button">Ellenőrzés és véglegesítés</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <span>EKR prototípus</span>
+      <span>Helyben mentve ≠ feltöltve</span>
+    </footer>
+  </body>
+</html>
