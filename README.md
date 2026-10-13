@@ -23,7 +23,7 @@ Nyisd meg a repository gyökérkönyvtárát egy helyi HTTP fejlesztői szerverr
 - A mock átvételi azonosítót adhat, de nem küld adatot hálózaton: a munka `pending_upload` állapotban marad, és soha nem jelenik meg feltöltöttként. Sikertelen próbálkozásnál az adat helyben megmarad; az automatikus újrapróbálkozás exponenciális késleltetésű, a kézi indítás ezt megkerüli. Online állapot visszatérésekor az esedékes queue automatikusan újraindul.
 - Az adatbázis 1-es verziójáról 2-esre migrálódik a tartós feltöltési queue hozzáadásához. A kivitelezések és Blobként tárolt képek/aláírások megmaradnak.
 - Az adatok az adott böngészőben és eszközön maradnak. Kizárólag szintetikus tesztadatokat használj.
-- Az alkalmazáshéj gyorsítótár-verziója a `sw.js` fájlban található. Statikus fájlok frissítésekor növeld az `ekr-pwa-shell-v7` verzióját; az aktiválás a korábbi, ehhez az alkalmazáshoz tartozó cache-t törli, az IndexedDB-adatokat nem.
+- Az alkalmazáshéj gyorsítótár-verziója a `sw.js` fájlban található. Statikus fájlok frissítésekor növeld az `ekr-pwa-shell-v8` verzióját; az aktiválás a korábbi, ehhez az alkalmazáshoz tartozó cache-t törli, az IndexedDB-adatokat nem.
 - A GitHub Pages HTTPS-kiszolgálásáról és a telepítési állapotról a repository **Actions** lapján ellenőrizd a közzétételt.
 
 Éles használat előtt szükséges az Android-tableten történő tesztelés; iPad/iPhone használat előtt külön iPadOS/Safari teszt szükséges.

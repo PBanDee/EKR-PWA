@@ -857,6 +857,9 @@ function findMissingRequiredValues() {
   if (!currentInstallation.customerName) missing.push('Ügyfél neve');
   if (!currentInstallation.siteAddress) missing.push('Helyszín címe');
   if (!currentInstallation.installationDate) missing.push('Kivitelezés dátuma');
+  if (!currentInstallation.signatures || currentInstallation.signatures.length === 0) {
+    missing.push('Aláírás');
+  }
 
   for (const template of currentInstallation.templateSnapshots) {
     if (!template.required) continue;

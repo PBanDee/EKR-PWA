@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ekr-pwa-shell-v7';
+const CACHE_NAME = 'ekr-pwa-shell-v8';
 const CACHE_PREFIX = 'ekr-pwa-shell-';
 const SHELL_FILES = [
   './',
